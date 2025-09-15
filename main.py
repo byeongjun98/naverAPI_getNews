@@ -19,7 +19,7 @@ def create_news_table():
             CREATE TABLE IF NOT EXISTS news (
                 id SERIAL PRIMARY KEY,
                 title VARCHAR(255),
-                link VARCHAR(255),
+                link VARCHAR(255) UNIQUE,
                 description TEXT,
                 pub_date TIMESTAMP
             )
@@ -43,10 +43,14 @@ def save_news_to_db(news_items):
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
         for item in news_items:
-            cur.execute(
-                "INSERT INTO news (title, link, description, pub_date) VALUES (%s, %s, %s, %s)",
-                (item['title'], item['originallink'], item['description'], item['pubDate'])
-            )
+            # 데이터베이스에 이미 존재하는 링크인지 확인
+            cur.execute("SELECT link FROM news WHERE link = %s", (item['originallink'],))
+            if cur.fetchone() is None:
+                # 존재하지 않으면 데이터 삽입
+                cur.execute(
+                    "INSERT INTO news (title, link, description, pub_date) VALUES (%s, %s, %s, %s)",
+                    (item['title'], item['originallink'], item['description'], item['pubDate'])
+                )
         conn.commit()
         cur.close()
     except (Exception, psycopg2.DatabaseError) as error:

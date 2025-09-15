@@ -2,8 +2,9 @@ import os
 import re
 import requests
 import psycopg2
+import html
 from fastapi import FastAPI, HTTPException, Query
-from typing import Literal, List
+from typing import Literal, List, Tuple
 from config import DB_CONFIG, NAVER_CLIENT_ID, NAVER_CLIENT_SECRET
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from konlpy.tag import Okt
@@ -59,9 +60,11 @@ def save_news_to_db(news_items):
         if conn is not None:
             conn.close()
 
-def def_html_tags(text):
-    """HTML 태그를 제거하는 함수"""
-    return re.sub(r'<[^>]+>', '', text)
+def clean_text(text):
+    """HTML 태그를 제거하고 HTML 엔티티를 변환하는 함수"""
+    text = re.sub(r'<[^>]+>', '', text)
+    text = html.unescape(text)
+    return text
 
 @app.get("/")
 def read_root():
@@ -108,10 +111,10 @@ async def get_news(
         data = response.json()
         news_items = data.get("items", [])
         
-        # title과 description에서 HTML 태그 제거
+        # title과 description에서 HTML 태그 및 엔티티 제거
         for item in news_items:
-            item["title"] = def_html_tags(item["title"])
-            item["description"] = def_html_tags(item["description"])
+            item["title"] = clean_text(item["title"])
+            item["description"] = clean_text(item["description"])
         
         # save_to_db가 True일 경우에만 뉴스 데이터를 데이터베이스에 저장
         if save_to_db:
@@ -122,9 +125,9 @@ async def get_news(
     else:
         raise HTTPException(status_code=response.status_code, detail=response.json())
 
-async def fetch_and_extract_keywords(keywords: List[str]) -> List[str]:
+async def fetch_and_extract_keywords(keywords: List[str]) -> List[Tuple[str, int]]:
     """
-    키워드 리스트를 받아 뉴스를 검색하고, 형태소 분석을 통해 새로운 키워드 리스트를 반환합니다.
+    키워드 리스트를 받아 뉴스를 검색하고, 형태소 분석을 통해 새로운 키워드와 빈도수 리스트를 반환합니다.
     """
     print(f"Analyzing keywords: {keywords}")
     okt = Okt()
@@ -141,12 +144,18 @@ async def fetch_and_extract_keywords(keywords: List[str]) -> List[str]:
                 print("검색된 뉴스가 없습니다.")
                 continue
 
-            # 제목과 설명을 출력하고, 전체 텍스트에 합침
+            # 제목, 설명, 링크, 날짜를 출력하고 전체 텍스트에 합침
             for item in news_items:
                 title = item.get('title', '')
                 description = item.get('description', '')
+                link = item.get('originallink', '')
+                pub_date = item.get('pubDate', '')
+                
                 print(f"  - 제목: {title}")
                 print(f"    설명: {description}")
+                print(f"    링크: {link}")
+                print(f"    날짜: {pub_date}")
+                
                 all_news_text += title + " " + description + " "
 
         except Exception as e:
@@ -161,8 +170,8 @@ async def fetch_and_extract_keywords(keywords: List[str]) -> List[str]:
     counter = Counter(meaningful_nouns)
     top_keywords = counter.most_common(20)
 
-    # 카운트를 제외하고 키워드(문자열)만 반환
-    return [kw for kw, count in top_keywords]
+    # 카운트와 함께 키워드 반환
+    return top_keywords
 
 @app.get("/api/news/analyze-recursive")
 async def analyze_news_recursively(depth: int = Query(2, ge=1, le=5, description="분석 깊이 (1-5)")):
@@ -183,21 +192,23 @@ async def analyze_news_recursively(depth: int = Query(2, ge=1, le=5, description
     print(f"--- Depth 0 Keywords ---")
     print(current_keywords)
 
+    final_keywords_with_counts = []
     for i in range(depth):
         print(f"--- Analyzing Depth {i + 1} ---")
-        new_keywords = await fetch_and_extract_keywords(current_keywords)
+        new_keywords_with_counts = await fetch_and_extract_keywords(current_keywords)
 
-        if not new_keywords:
+        if not new_keywords_with_counts:
             print("No new keywords found. Stopping analysis.")
             break
         
-        current_keywords = new_keywords
-        all_results[f"depth_{i+1}"] = current_keywords
+        final_keywords_with_counts = new_keywords_with_counts
+        current_keywords = [kw for kw, count in new_keywords_with_counts]
+        all_results[f"depth_{i+1}"] = new_keywords_with_counts
         print(f"--- Depth {i + 1} Extracted Keywords ---")
-        print(current_keywords)
+        print(new_keywords_with_counts)
 
     print("=== Recursive Keyword Analysis Complete ===")
-    return {"final_keywords": current_keywords, "all_depth_results": all_results}
+    return {"final_keywords": final_keywords_with_counts, "all_depth_results": all_results}
 
 async def fetch_and_analyze_disaster_news():
     """매일 재난 관련 키워드로 뉴스를 검색하고, 추출된 키워드로 다시 검색하는 심층 분석을 수행합니다."""
@@ -215,16 +226,15 @@ async def fetch_and_analyze_disaster_news():
 
     for i in range(depth):
         print(f"--- Analyzing Depth {i + 1} ---")
-        # fetch_and_extract_keywords 함수는 내부적으로 뉴스 제목/설명을 출력합니다.
-        new_keywords = await fetch_and_extract_keywords(current_keywords)
+        new_keywords_with_counts = await fetch_and_extract_keywords(current_keywords)
 
-        if not new_keywords:
+        if not new_keywords_with_counts:
             print("No new keywords found. Stopping analysis.")
             break
         
-        current_keywords = new_keywords
+        current_keywords = [kw for kw, count in new_keywords_with_counts]
         print(f"--- Depth {i + 1} Extracted Keywords ---")
-        print(current_keywords)
+        print(new_keywords_with_counts)
 
     print("\n=== 작업 완료 ===")
 

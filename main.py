@@ -208,7 +208,8 @@ async def analyze_news_recursively(depth: int = Query(2, ge=1, le=5, description
         print(new_keywords_with_counts)
 
     print("=== Recursive Keyword Analysis Complete ===")
-    return {"final_keywords": final_keywords_with_counts, "all_depth_results": all_results}
+    return{"all_depth_results": all_results}
+    # return {"final_keywords": final_keywords_with_counts, "all_depth_results": all_results}
 
 async def fetch_and_analyze_disaster_news():
     """매일 재난 관련 키워드로 뉴스를 검색하고, 추출된 키워드로 다시 검색하는 심층 분석을 수행합니다."""

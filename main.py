@@ -67,9 +67,9 @@ def read_root():
 @app.get("/api/news")
 async def get_news(
         query: str = Query(..., min_length=1, description="검색할 쿼리"),
-    display: int = Query(10, ge=1, le=100, description="한 번에 표시할 검색 결과 개수 (1~100)"),
-    start: int = Query(1, ge=1, le=1000, description="검색 시작 위치 (1~1000)"),
-    sort: Literal['sim', 'date'] = Query('sim', description="정렬 옵션: sim (유사도순), date (날짜순)")
+        display: int = Query(10, ge=1, le=100, description="한 번에 표시할 검색 결과 개수 (1~100)"),
+        start: int = Query(1, ge=1, le=1000, description="검색 시작 위치 (1~1000)"),
+        sort: Literal['sim', 'date'] = Query('sim', description="정렬 옵션: sim (유사도순), date (날짜순)")
 ):
     """
     네이버 뉴스 API를 호출하여 뉴스 검색 결과를 반환하고 데이터베이스에 저장합니다.

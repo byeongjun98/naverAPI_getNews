@@ -5,6 +5,9 @@ import psycopg2
 from fastapi import FastAPI, HTTPException, Query
 from typing import Literal
 from config import DB_CONFIG, NAVER_CLIENT_ID, NAVER_CLIENT_SECRET
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from konlpy.tag import Okt
+from collections import Counter
 
 # FastAPI 앱을 초기화합니다.
 app = FastAPI()
@@ -31,10 +34,6 @@ def create_news_table():
     finally:
         if conn is not None:
             conn.close()
-
-@app.on_event("startup")
-async def startup_event():
-    create_news_table()
 
 def save_news_to_db(news_items):
     """뉴스 아이템을 데이터베이스에 저장합니다."""
@@ -73,7 +72,8 @@ async def get_news(
         query: str = Query(..., min_length=1, description="검색할 쿼리"),
         display: int = Query(10, ge=1, le=100, description="한 번에 표시할 검색 결과 개수 (1~100)"),
         start: int = Query(1, ge=1, le=1000, description="검색 시작 위치 (1~1000)"),
-        sort: Literal['sim', 'date'] = Query('sim', description="정렬 옵션: sim (유사도순), date (날짜순)")
+        sort: Literal['sim', 'date'] = Query('sim', description="정렬 옵션: sim (유사도순), date (날짜순)"),
+        save_to_db: bool = True  # DB 저장 여부 파라미터 추가
 ):
     """
     네이버 뉴스 API를 호출하여 뉴스 검색 결과를 반환하고 데이터베이스에 저장합니다.
@@ -112,10 +112,84 @@ async def get_news(
             item["title"] = def_html_tags(item["title"])
             item["description"] = def_html_tags(item["description"])
         
-        # 뉴스 데이터를 데이터베이스에 저장
-        save_news_to_db(news_items)
+        # save_to_db가 True일 경우에만 뉴스 데이터를 데이터베이스에 저장
+        if save_to_db:
+            save_news_to_db(news_items)
         
         return data
     # 그렇지 않은 경우, HTTP 예외를 발생시킵니다.
     else:
         raise HTTPException(status_code=response.status_code, detail=response.json())
+
+async def fetch_and_analyze_disaster_news():
+    """매일 재난 관련 키워드로 뉴스를 검색하고 형태소 분석을 수행합니다."""
+    print("=== 매일 재난 관련 사회현안 키워드 검색 및 분석 시작 ===")
+    
+    # 1. 임의의 키워드 데이터 생성 (ChatGPT API 연동 전 임시 데이터)
+    disaster_keywords = [
+        "지진", "홍수", "태풍", "산불", "폭설",
+        "감염병", "미세먼지", "가뭄", "화산", "쓰나미"
+    ]
+    print(f"오늘의 키워드: {disaster_keywords}")
+
+    okt = Okt()
+    all_news_text = ""
+
+    for keyword in disaster_keywords:
+        print(f"--- 키워드 '{keyword}' 뉴스 검색 결과 ---")
+        try:
+            # 2. 기존 API를 호출하여 뉴스 검색 (DB 저장 안함)
+            news_data = await get_news(query=keyword, display=10, sort='date', start=1, save_to_db=False)
+            news_items = news_data.get("items", [])
+            
+            if not news_items:
+                print("검색된 뉴스가 없습니다.")
+                continue
+
+            # 검색된 뉴스 제목과 설명 출력 및 전체 텍스트에 추가
+            for item in news_items:
+                title = item.get('title', '')
+                description = item.get('description', '')
+                print(f"  - 제목: {title}")
+                print(f"    설명: {description}")
+                all_news_text += title + " " + description + " "
+
+        except Exception as e:
+            print(f"'{keyword}' 키워드 뉴스 검색 중 오류 발생: {e}")
+
+    print("\n--- 전체 뉴스 데이터 형태소 분석 및 키워드 추출 ---")
+    if all_news_text:
+        # 3. 형태소 분석을 통해 명사만 추출
+        nouns = okt.nouns(all_news_text)
+        
+        # 두 글자 이상인 명사만 필터링
+        meaningful_nouns = [n for n in nouns if len(n) > 1]
+        
+        # 가장 많이 나온 키워드 20개 추출
+        counter = Counter(meaningful_nouns)
+        top_keywords = counter.most_common(20)
+        
+        print("추출된 주요 키워드 (상위 20개):")
+        print(top_keywords)
+    else:
+        print("분석할 뉴스 데이터가 없습니다.")
+
+    print("=== 작업 완료 ===")
+
+@app.on_event("startup")
+async def startup_event():
+    """애플리케이션 시작 시 실행될 이벤트"""
+    create_news_table()
+    
+    # 스케줄러 설정
+    scheduler = AsyncIOScheduler(daemon=True, timezone='Asia/Seoul')
+    
+    # 매일 새벽 3시에 'fetch_and_analyze_disaster_news' 함수 실행
+    scheduler.add_job(fetch_and_analyze_disaster_news, 'cron', hour=3, minute=0)
+    
+    # 테스트를 위해 앱 시작 후 10초 뒤에 1회 실행
+    from datetime import datetime, timedelta
+    run_time = datetime.now() + timedelta(seconds=10)
+    scheduler.add_job(fetch_and_analyze_disaster_news, 'date', run_date=run_time)
+
+    scheduler.start()

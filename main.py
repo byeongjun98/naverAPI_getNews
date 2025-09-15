@@ -3,11 +3,12 @@ import re
 import requests
 import psycopg2
 from fastapi import FastAPI, HTTPException, Query
-from typing import Literal
+from typing import Literal, List
 from config import DB_CONFIG, NAVER_CLIENT_ID, NAVER_CLIENT_SECRET
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from konlpy.tag import Okt
 from collections import Counter
+from datetime import datetime, timedelta
 
 # FastAPI 앱을 초기화합니다.
 app = FastAPI()
@@ -121,32 +122,26 @@ async def get_news(
     else:
         raise HTTPException(status_code=response.status_code, detail=response.json())
 
-async def fetch_and_analyze_disaster_news():
-    """매일 재난 관련 키워드로 뉴스를 검색하고 형태소 분석을 수행합니다."""
-    print("=== 매일 재난 관련 사회현안 키워드 검색 및 분석 시작 ===")
-    
-    # 1. 임의의 키워드 데이터 생성 (ChatGPT API 연동 전 임시 데이터)
-    disaster_keywords = [
-        "지진", "홍수", "태풍", "산불", "폭설",
-        "감염병", "미세먼지", "가뭄", "화산", "쓰나미"
-    ]
-    print(f"오늘의 키워드: {disaster_keywords}")
-
+async def fetch_and_extract_keywords(keywords: List[str]) -> List[str]:
+    """
+    키워드 리스트를 받아 뉴스를 검색하고, 형태소 분석을 통해 새로운 키워드 리스트를 반환합니다.
+    """
+    print(f"Analyzing keywords: {keywords}")
     okt = Okt()
     all_news_text = ""
 
-    for keyword in disaster_keywords:
-        print(f"--- 키워드 '{keyword}' 뉴스 검색 결과 ---")
+    for keyword in keywords:
+        print(f"--- 키워드 '{keyword}' 뉴스 검색 중 ---")
         try:
-            # 2. 기존 API를 호출하여 뉴스 검색 (DB 저장 안함)
-            news_data = await get_news(query=keyword, display=10, sort='date', start=1, save_to_db=False)
+            # DB 저장 없이 뉴스 검색
+            news_data = await get_news(query=keyword, display=10, start=1, sort='date', save_to_db=False)
             news_items = news_data.get("items", [])
-            
+
             if not news_items:
                 print("검색된 뉴스가 없습니다.")
                 continue
 
-            # 검색된 뉴스 제목과 설명 출력 및 전체 텍스트에 추가
+            # 제목과 설명을 출력하고, 전체 텍스트에 합침
             for item in news_items:
                 title = item.get('title', '')
                 description = item.get('description', '')
@@ -155,26 +150,83 @@ async def fetch_and_analyze_disaster_news():
                 all_news_text += title + " " + description + " "
 
         except Exception as e:
-            print(f"'{keyword}' 키워드 뉴스 검색 중 오류 발생: {e}")
+            print(f"Error fetching news for keyword '{keyword}': {e}")
 
-    print("\n--- 전체 뉴스 데이터 형태소 분석 및 키워드 추출 ---")
-    if all_news_text:
-        # 3. 형태소 분석을 통해 명사만 추출
-        nouns = okt.nouns(all_news_text)
-        
-        # 두 글자 이상인 명사만 필터링
-        meaningful_nouns = [n for n in nouns if len(n) > 1]
-        
-        # 가장 많이 나온 키워드 20개 추출
-        counter = Counter(meaningful_nouns)
-        top_keywords = counter.most_common(20)
-        
-        print("추출된 주요 키워드 (상위 20개):")
-        print(top_keywords)
-    else:
-        print("분석할 뉴스 데이터가 없습니다.")
+    if not all_news_text:
+        return []
 
-    print("=== 작업 완료 ===")
+    # 명사 추출
+    nouns = okt.nouns(all_news_text)
+    meaningful_nouns = [n for n in nouns if len(n) > 1]
+    counter = Counter(meaningful_nouns)
+    top_keywords = counter.most_common(20)
+
+    # 카운트를 제외하고 키워드(문자열)만 반환
+    return [kw for kw, count in top_keywords]
+
+@app.get("/api/news/analyze-recursive")
+async def analyze_news_recursively(depth: int = Query(2, ge=1, le=5, description="분석 깊이 (1-5)")):
+    """
+    재귀적으로 뉴스 분석을 수행합니다.
+    초기 키워드 셋으로 뉴스를 검색하고, 새로운 키워드를 추출하여 
+    'depth' 횟수만큼 이 과정을 반복합니다.
+    """
+    print(f"=== Recursive Keyword Analysis Started (depth={depth}) ===")
+
+    # 초기 키워드
+    current_keywords = [
+        "지진", "홍수", "태풍", "산불", "폭설",
+        "감염병", "미세먼지", "가뭄", "화산", "쓰나미"
+    ]
+    
+    all_results = {"depth_0": current_keywords}
+    print(f"--- Depth 0 Keywords ---")
+    print(current_keywords)
+
+    for i in range(depth):
+        print(f"--- Analyzing Depth {i + 1} ---")
+        new_keywords = await fetch_and_extract_keywords(current_keywords)
+
+        if not new_keywords:
+            print("No new keywords found. Stopping analysis.")
+            break
+        
+        current_keywords = new_keywords
+        all_results[f"depth_{i+1}"] = current_keywords
+        print(f"--- Depth {i + 1} Extracted Keywords ---")
+        print(current_keywords)
+
+    print("=== Recursive Keyword Analysis Complete ===")
+    return {"final_keywords": current_keywords, "all_depth_results": all_results}
+
+async def fetch_and_analyze_disaster_news():
+    """매일 재난 관련 키워드로 뉴스를 검색하고, 추출된 키워드로 다시 검색하는 심층 분석을 수행합니다."""
+    depth = 2  # 총 2단계 분석 수행
+    print(f"=== 매일 재난 관련 사회현안 키워드 심층 분석 시작 (depth={depth}) ===")
+
+    # 초기 키워드
+    current_keywords = [
+        "지진", "홍수", "태풍", "산불", "폭설",
+        "감염병", "미세먼지", "가뭄", "화산", "쓰나미"
+    ]
+    
+    print(f"--- Depth 0 Keywords ---")
+    print(current_keywords)
+
+    for i in range(depth):
+        print(f"--- Analyzing Depth {i + 1} ---")
+        # fetch_and_extract_keywords 함수는 내부적으로 뉴스 제목/설명을 출력합니다.
+        new_keywords = await fetch_and_extract_keywords(current_keywords)
+
+        if not new_keywords:
+            print("No new keywords found. Stopping analysis.")
+            break
+        
+        current_keywords = new_keywords
+        print(f"--- Depth {i + 1} Extracted Keywords ---")
+        print(current_keywords)
+
+    print("\n=== 작업 완료 ===")
 
 @app.on_event("startup")
 async def startup_event():
@@ -188,7 +240,6 @@ async def startup_event():
     scheduler.add_job(fetch_and_analyze_disaster_news, 'cron', hour=3, minute=0)
     
     # 테스트를 위해 앱 시작 후 10초 뒤에 1회 실행
-    from datetime import datetime, timedelta
     run_time = datetime.now() + timedelta(seconds=10)
     scheduler.add_job(fetch_and_analyze_disaster_news, 'date', run_date=run_time)
 

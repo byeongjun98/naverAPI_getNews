@@ -1,0 +1,11 @@
+
+DB_CONFIG = {
+    "host": "localhost",
+    "port": 5432,
+    "dbname": "newsDatabase",
+    "user": "your_db_user",
+    "password": "your_db_password"
+}
+
+NAVER_CLIENT_ID = "YOUR_NAVER_CLIENT_ID"
+NAVER_CLIENT_SECRET = "YOUR_NAVER_CLIENT_SECRET"

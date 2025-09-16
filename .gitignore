@@ -9,3 +9,5 @@ __pycache__/
 
 # Configuration - DO NOT COMMIT!
 config.py
+
+.DS_Store
